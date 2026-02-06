@@ -5,6 +5,7 @@ using Microsoft.SemanticKernel;
 using OpenAI;
 using CreditAI.API.Infrastructure.Data;
 using CreditAI.API.Services;
+using System.Reflection;
 
 namespace CreditAI.API
 {
@@ -37,6 +38,13 @@ namespace CreditAI.API
                 var kBuilder = Kernel.CreateBuilder();
                 kBuilder.AddOpenAIChatCompletion("mistral-small-latest", apiKey, httpClient: new HttpClient { BaseAddress = mistralEndpoint });
                 return kBuilder.Build();
+            });
+
+            builder.Services.AddSwaggerGen(c =>
+            {
+                var xmlFile = $"{Assembly.GetExecutingAssembly().GetName().Name}.xml"; 
+                var xmlPath = Path.Combine(AppContext.BaseDirectory, xmlFile);
+                c.IncludeXmlComments(xmlPath);
             });
 
             builder.Services.AddScoped<CreditAnalysisService>();
