@@ -30,7 +30,7 @@ namespace CreditAI.API
             // Configuração do Gerador de Embeddings para o modelo da Mistral
             builder.Services.AddSingleton<IEmbeddingGenerator<string, Embedding<float>>>(
                 mistralClient.GetEmbeddingClient("mistral-embed")
-                            .AsIEmbeddingGenerator());
+                                .AsIEmbeddingGenerator());
 
             // Configuração do Semantic Kernel para Chat
             builder.Services.AddScoped(sp =>
@@ -48,7 +48,12 @@ namespace CreditAI.API
             });
 
             builder.Services.AddScoped<CreditAnalysisService>();
-            builder.Services.AddControllers();
+            builder.Services // Se o JSON vier inválido, o filtro de validação automática irá retornar um erro 400 com detalhes do problema
+                        .AddControllers()
+                        .ConfigureApiBehaviorOptions(options =>
+                        {
+                            options.SuppressModelStateInvalidFilter = false;
+                        });
             builder.Services.AddEndpointsApiExplorer();
             builder.Services.AddSwaggerGen();
 
@@ -56,6 +61,11 @@ namespace CreditAI.API
 
             if (app.Environment.IsDevelopment())
             {
+                // Migrations
+                using var scope = app.Services.CreateScope();
+                var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+                db.Database.Migrate();
+
                 app.UseSwagger();
                 app.UseSwaggerUI();
             }

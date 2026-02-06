@@ -7,6 +7,7 @@ public class Customer
     public int FinancialScore { get; set; }
     public string HistoricText { get; set; } = string.Empty;
     public byte[] BehaviorEmbedding { get; set; } = Array.Empty<byte>();
-    public DateTime LastAnalysisDate { get; set; } = DateTime.Now;
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+    public Guid PublicId { get; set; }
 
 }

@@ -12,89 +12,127 @@ public class ClientsController(CreditAnalysisService creditAnalysisService): Con
     /// Lista todos os clientes cadastrados na base.
     /// </summary>
     /// <remarks>
-    /// Retorna a lista completa para fins de conferência.
+    /// Retorna uma lista paginada de clientes para fins de conferência e visualização.
+    /// Use os parâmetros <paramref name="page"/> e <paramref name="pageSize"/> para controlar a paginação.
     /// </remarks>
-    /// <response code="200">Lista de todos os clientes.</response>
-    /// <returns>Lista de clientes.</returns>
+    /// <param name="page">Número da página a ser retornada. Valor padrão é 1.</param>
+    /// <param name="pageSize">Quantidade de clientes por página. Valor padrão é 20.</param>
+    /// <param name="ct">Token de cancelamento para abortar a requisição.</param>
+    /// <response code="200">Lista paginada de clientes.</response>
     [HttpGet]
-    public async Task<IActionResult> GetAll()
+    [ProducesResponseType(typeof(PagedResponse<ClientResponse>), StatusCodes.Status200OK)]
+    public async Task<IActionResult> GetClients(
+        [FromQuery] int page = 1,
+        [FromQuery] int pageSize = 20,
+        CancellationToken ct = default)
     {
-        var clients = await creditAnalysisService.GetAllClients();
-        var response = clients.Select(c => new ClientResponse
-        {
-            Id = c.Id,
-            Name = c.Name,
-            FinancialScore = c.FinancialScore,
-            HistoricText = c.HistoricText,
-            LastAnalysisDate = c.LastAnalysisDate
-        });
-
+        var response = await creditAnalysisService
+                                .GetAllClients(page, pageSize, ct);
         return Ok(response);
+    }
+
+    /// <summary>
+    /// Obtém um cliente específico pelo seu identificador público (GUID).
+    /// </summary>
+    /// <param name="id">Identificador público (GUID) do cliente.</param>
+    /// <param name="ct">Token de cancelamento para abortar a requisição.</param>
+    /// <response code="200">Retorna o cliente solicitado.</response>
+    /// <response code="404">Cliente não encontrado.</response>
+    [HttpGet("{id:guid}")]
+    [ProducesResponseType(typeof(ClientResponse), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    public async Task<ActionResult<ClientResponse>> GetById(
+        Guid id,
+        CancellationToken ct)
+    {
+        var client = await creditAnalysisService.GetById(id, ct);
+        return Ok(client);
     }
 
     /// <summary>
     /// Cadastra um novo cliente e gera seu perfil vetorial.
     /// </summary>
     /// <remarks>
-    /// Este endpoint envia o texto do histórico para o modelo 'mistral-embed', 
-    /// gera um vetor numérico e persiste no banco de dados para buscas futuras.
+    /// Recebe os dados do cliente, envia o histórico textual para geração de embeddings 
+    /// e persiste as informações no banco de dados.
+    /// Retorna o cliente recém-criado com seu GUID público.
     /// </remarks>
-    /// <param name="name">Nome completo do cliente.</param>
-    /// <param name="score">Score financeiro tradicional (0 a 1000).</param>
-    /// <param name="historic">Texto detalhado com o histórico de crédito e comportamento do cliente.</param>
-    /// <response code="200">Cliente vetorizado e inserido.</response>
-    /// <response code="400">Erro de validação</response>
-    [HttpPost("ingest")]
+    /// <param name="request">Objeto contendo os dados do cliente.</param>
+    /// <param name="ct">Token de cancelamento para abortar a requisição.</param>
+    /// <response code="201">Cliente inserido e vetorizado com sucesso.</response>
+    /// <response code="400">Erro de validação do request.</response>
+    [HttpPost]
+    [ProducesResponseType(typeof(ClientResponse), StatusCodes.Status201Created)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
     public async Task<IActionResult> Ingest(
-        string name,
-        int score,
-        string historic)
+        [FromBody] ClientRequest request,
+        CancellationToken ct)
     {
-        if (string.IsNullOrWhiteSpace(historic))
-            return BadRequest(new { error = "O histórico é obrigatório para vetorização." });
+        var response = await creditAnalysisService.Ingest(request, ct);
 
-        await creditAnalysisService.Ingest(name, score, historic);
-
-        return Ok(new { message = "Cliente inserido e vetorizado." });
+        return CreatedAtAction(nameof(GetById), new { id = response.PublicId }, response);
     }
 
     /// <summary>
-    /// Realiza a análise cognitiva de um cliente (RAG).
+    /// Realiza a análise cognitiva de risco de crédito de um cliente.
     /// </summary>
     /// <remarks>
-    /// Envia o histórico do cliente para a IA e processa uma pergunta específica.
-    /// Exemplo: "O histórico deste cliente justifica um aumento de limite?"
+    /// Envia o histórico do cliente para o modelo de linguagem e retorna insights técnicos sobre o risco financeiro.
+    /// Perguntas podem ser como: "O histórico deste cliente justifica um aumento de limite?"
     /// </remarks>
-    /// <param name="id">ID numérico do cliente.</param>
-    /// <param name="question">A pergunta a ser feita.</param>
-    /// <response code="200">Retorna a análise da IA.</response>
-    [HttpGet("{id}/analyze")]
+    /// <param name="id">Identificador público (GUID) do cliente.</param>
+    /// <param name="question">Pergunta a ser enviada para análise pelo modelo de IA.</param>
+    /// <param name="ct">Token de cancelamento para abortar a requisição.</param>
+    /// <response code="200">Retorna a análise de risco do cliente.</response>
+    /// <response code="400">Pergunta inválida (vazia ou nula).</response>
+    /// <response code="404">Cliente não encontrado.</response>
+    [HttpGet("{id:guid}/analyze")]
+    [ProducesResponseType(typeof(RiskAnalysisResponse), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
     public async Task<IActionResult> Analyze(
-        int id, [FromQuery] string question)
-        => Ok(new { analysis = await creditAnalysisService.AnalyzeRisk(id, question) });
+        Guid id,
+        [FromQuery] string question,
+        CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(question))
+            return BadRequest("A pergunta não pode ser vazia.");
+
+        var result = await creditAnalysisService.AnalyzeRisk(id, question, ct);
+
+        if (result is null)
+            return NotFound();
+
+        return Ok(result);
+    }
 
     /// <summary>
     /// Localiza clientes com perfis comportamentais similares.
     /// </summary>
     /// <remarks>
-    /// Realiza uma busca por similaridade de cosseno no banco de dados. 
-    /// Retorna os perfis que possuem as características financeiras mais próximas ao do cliente informado, 
-    /// baseando-se no vetor gerado pelo histórico textual.
+    /// Realiza uma busca por similaridade de cosseno no histórico vetorial do cliente informado.
+    /// Retorna os perfis com características financeiras mais próximas.
     /// </remarks>
-    /// <param name="id">ID do cliente base para a comparação.</param>
+    /// <param name="id">Identificador do cliente base para a comparação.</param>
+    /// <param name="limit">Número máximo de clientes similares a serem retornados. Limite entre 1 e 20.</param>
+    /// <param name="ct">Token de cancelamento para abortar a requisição.</param>
     /// <response code="200">Lista de clientes semanticamente similares.</response>
-    [HttpGet("{id}/similar")]
-    public async Task<IActionResult> GetSimilar(int id)
+    /// <response code="404">Nenhum cliente similar encontrado.</response>
+    [HttpGet("{id:guid}/similar")]
+    [ProducesResponseType(typeof(IEnumerable<ClientResponse>), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    public async Task<IActionResult> GetSimilar(
+        Guid id,
+        [FromQuery] int limit = 5,
+        CancellationToken ct = default)
     {
-        var similarClients = await creditAnalysisService.GetSimilarCustomers(id);
+        limit = Math.Clamp(limit, 1, 20); // Limita o número de resultados entre 1 e 20
 
-        var response = similarClients.Select(c => new ClientResponse {
-            Id = c.Id,
-            Name = c.Name,
-            FinancialScore = c.FinancialScore,
-            HistoricText = c.HistoricText,
-            LastAnalysisDate = c.LastAnalysisDate
-        });
+        var response = await creditAnalysisService
+                                .GetSimilarCustomers(id, limit, ct);
+
+        if (response.Count == 0)
+            return NotFound();
 
         return Ok(response);
     }

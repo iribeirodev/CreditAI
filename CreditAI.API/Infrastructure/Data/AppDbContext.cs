@@ -15,6 +15,9 @@ public class AppDbContext: DbContext
         {
             entity.HasKey(e => e.Id);
             entity.Property(e => e.BehaviorEmbedding).HasColumnType("VARBINARY(MAX)");
+            entity.Property(e => e.PublicId)
+                  .HasDefaultValueSql("newsequentialid()")
+                  .ValueGeneratedOnAdd();
         });
     }
 }

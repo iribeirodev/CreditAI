@@ -6,9 +6,9 @@
 public record ClientResponse
 {
     /// <summary>
-    /// Identificador único do cliente
+    /// Identificador GUID único do cliente, utilizado para referência e rastreamento.
     /// </summary>
-    public int Id { get; init; }
+    public Guid PublicId { get; init; }
 
     /// <summary>
     /// Nome completo
