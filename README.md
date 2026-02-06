@@ -1,6 +1,6 @@
 # CreditAI - Análise de Crédito com IA Vetorial \& .NET 8
 
-
+[![Build](https://github.com/iribeirodev/CreditAI/actions/workflows/dotnet.yml/badge.svg)](https://github.com/iribeirodev/CreditAI/actions/workflows/dotnet.yml)
 
 **CreditAI** é uma API de demonstração que revoluciona a avaliação de risco financeiro. Em vez de depender apenas de números (Scores), o sistema utiliza **IA Generativa (Mistral AI)** e **Busca Vetorial** para entender o comportamento real do cliente através do seu histórico textual.
 
