@@ -8,7 +8,7 @@ public record ClientResponse
     /// <summary>
     /// Identificador GUID único do cliente, utilizado para referência e rastreamento.
     /// </summary>
-    public Guid PublicId { get; init; }
+    public Guid Id { get; init; }
 
     /// <summary>
     /// Nome completo
@@ -26,7 +26,7 @@ public record ClientResponse
     public string HistoricText { get; init; }
 
     /// <summary>
-    /// Data e hora da última atualização ou análise do cliente pela IA
+    /// Data e hora de criação
     /// </summary>
-    public DateTime? LastAnalysisDate { get; init; }
+    public DateTime? CreatedAt { get; init; }
 }

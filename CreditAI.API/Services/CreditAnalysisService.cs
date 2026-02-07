@@ -22,8 +22,12 @@ public class CreditAnalysisService(
     {
         ArgumentNullException.ThrowIfNull(request);
 
+        var normalizedHistoric = NormalizeHistoric(request.HistoricText.Trim());
+        if (normalizedHistoric.Length < 30)
+            throw new ArgumentException("O histórico do cliente deve conter pelo menos 30 caracteres para uma análise significativa.");
+
         var embeddings = await embeddingGenerator.GenerateAsync(
-                                                values: [request.HistoricText.Trim()], 
+                                                values: [normalizedHistoric], 
                                                 cancellationToken: ct);
 
         var vectorBytes = VectorHelper.ToByteArray(
@@ -34,7 +38,7 @@ public class CreditAnalysisService(
             Name = request.Name.Trim(),
             FinancialScore = request.FinancialScore,
             HistoricText = request.HistoricText.Trim(),
-            BehaviorEmbedding = VectorHelper.ToByteArray(embeddings[0].Vector.ToArray()),
+            BehaviorEmbedding = vectorBytes,
             CreatedAt = DateTime.UtcNow,
         };
 
@@ -43,11 +47,11 @@ public class CreditAnalysisService(
 
         return new ClientResponse
         {
-            PublicId = customer.PublicId,
+            Id = customer.PublicId,
             Name = customer.Name,
             FinancialScore = customer.FinancialScore,
             HistoricText = customer.HistoricText,
-            LastAnalysisDate = customer.CreatedAt,
+            CreatedAt = customer.CreatedAt,
         };
     }
 
@@ -82,18 +86,21 @@ public class CreditAnalysisService(
     }
 
     /// <summary>
-    /// Busca por similaridade: Encontra outros clientes com comportamento semelhante
+    /// Encontra clientes com comportamento semelhante utilizando busca vetorial.
+    /// O histórico textual é convertido em embeddings (vetores numéricos),
+    /// permitindo comparar semanticamente os perfis.
     /// </summary>
     public async Task<List<SimilarCustomerResponse>> GetSimilarCustomers(
-        Guid publicId, 
+        Guid publicId,
         int limit,
         CancellationToken ct)
     {
+        // Cliente base da comparação
         var target = await context.Customers
-                                .AsNoTracking()
-                                .FirstOrDefaultAsync(c => c.PublicId == publicId, ct);
+            .AsNoTracking()
+            .FirstOrDefaultAsync(c => c.PublicId == publicId, ct);
 
-        if (target is null) 
+        if (target is null)
             throw new KeyNotFoundException($"Cliente com ID {publicId} não encontrado.");
 
         if (target.BehaviorEmbedding is null)
@@ -101,10 +108,9 @@ public class CreditAnalysisService(
 
         var targetVector = VectorHelper.ToFloatArray(target.BehaviorEmbedding);
 
-        // Traz candidados que tenham embedding
+        // Apenas candidatos com embedding
         var candidates = await context.Customers
-            .Where(c => c.PublicId != publicId
-                    && c.BehaviorEmbedding != null)
+            .Where(c => c.PublicId != publicId && c.BehaviorEmbedding != null)
             .AsNoTracking()
             .Select(c => new
             {
@@ -115,26 +121,66 @@ public class CreditAnalysisService(
             })
             .ToListAsync(ct);
 
-        // Calcula a similaridade e ordena os resultados retornando top N clientes mais similares
+        // Calcula a similaridade entre o cliente alvo e os demais utilizando cosine similarity.
+        // Cada histórico foi previamente transformado em um vetor numérico (embedding),
+        // permitindo comparar semanticamente os perfis em vez de apenas dados estruturados.
         var results = candidates
             .Select(c =>
             {
-                var similarity = TensorPrimitives.CosineSimilarity(
-                    VectorHelper.ToFloatArray(c.BehaviorEmbedding!),
+                var embeddingVector = VectorHelper.ToFloatArray(c.BehaviorEmbedding!);
+
+                var vectorSimilarity = TensorPrimitives.CosineSimilarity(
+                    embeddingVector,
                     targetVector);
 
-                return new SimilarCustomerResponse
+                // remove baixa relevância semântica
+                if (vectorSimilarity < 0.75f)
+                    return null;
+
+                // normaliza diferença de score para escala 0..1
+                var scoreDistance = Math.Abs(c.FinancialScore - target.FinancialScore);
+                var scoreSimilarity = 1f - (scoreDistance / 1000f);
+
+                // ranking híbrido (semântica + regra de negócio)
+                var finalScore = (vectorSimilarity * 0.75f) +
+                                 (scoreSimilarity * 0.25f);
+
+                string explanation;
+
+                if (vectorSimilarity > 0.90f)
+                    explanation = "Perfis comportamentais quase idênticos.";
+                else if (vectorSimilarity > 0.80f)
+                    explanation = "Comportamento financeiro muito semelhante.";
+                else
+                    explanation = "Similaridade moderada baseada no histórico.";
+
+                if (scoreSimilarity > 0.90f)
+                    explanation += " Scores financeiros praticamente iguais.";
+                else if (scoreSimilarity > 0.80f)
+                    explanation += " Scores financeiros próximos.";
+
+                return new
                 {
-                    Id = c.PublicId,
-                    Name = c.Name,
-                    FinancialScore = c.FinancialScore,
-                    Similarity = similarity
+                    c.PublicId,
+                    c.Name,
+                    c.FinancialScore,
+                    FinalScore = finalScore,
+                    VectorSimilarity = vectorSimilarity,
+                    Explanation = explanation
                 };
             })
-            .OrderByDescending(x => x.Similarity)
+            .Where(x => x is not null)
+            .OrderByDescending(x => x!.FinalScore)
             .Take(limit)
+            .Select(x => new SimilarCustomerResponse
+            {
+                Id = x!.PublicId,
+                Name = x.Name,
+                FinancialScore = x.FinancialScore,
+                Similarity = MathF.Round(x.VectorSimilarity, 4),
+                Reason = x.Explanation
+            })
             .ToList();
-
 
         return results;
     }
@@ -157,11 +203,11 @@ public class CreditAnalysisService(
                                 .Take(pageSize)
                                 .Select(c => new ClientResponse
                                 {
-                                    PublicId = c.PublicId,
+                                    Id = c.PublicId,
                                     Name = c.Name,
                                     FinancialScore = c.FinancialScore,
                                     HistoricText = c.HistoricText,
-                                    LastAnalysisDate = c.CreatedAt
+                                    CreatedAt = c.CreatedAt
                                 })
                                 .ToListAsync(ct);
 
@@ -188,11 +234,11 @@ public class CreditAnalysisService(
             .Where(c => c.PublicId == id)
             .Select(c => new ClientResponse
             {
-                PublicId = c.PublicId,
+                Id = c.PublicId,
                 Name = c.Name,
                 FinancialScore = c.FinancialScore,
                 HistoricText = c.HistoricText,
-                LastAnalysisDate = c.CreatedAt
+                CreatedAt = c.CreatedAt
             })
             .FirstOrDefaultAsync(ct);
 
@@ -205,19 +251,41 @@ public class CreditAnalysisService(
     private static string BuildPrompt(Customer customer, string question)
     {
         return $"""
-            System: Você é um especialista sênior em risco de crédito.
-            Context:
-            - Customer: {customer.Name}
-            - Financial Score: {customer.FinancialScore}
-            - Behavioral History: {customer.HistoricText}
+            System: Você é um especialista sênior em risco de crédito bancário.
 
-            Pergunta do usuário: 
+            Analise o cliente abaixo com rigor técnico, como se estivesse produzindo um parecer para um comitê de crédito.
+
+            Dados do cliente:
+            - Nome: {customer.Name}
+            - Score financeiro: {customer.FinancialScore}
+            - Histórico comportamental: {customer.HistoricText}
+
+            Pergunta:
             {question}
 
+            Instruções obrigatórias:
+
+            1. Classifique objetivamente:
+               - Risco de crédito: Baixo, Médio ou Alto
+               - Risco de evasão (churn): Baixo, Médio ou Alto
+
+            2. Justifique cada classificação com evidências do histórico.
+
+            3. Aponte sinais de atenção relevantes.
+
+            4. Recomende uma ação prática para o banco.
+
             Regras:
-            - Seja técnico e objetivo.
-            - Justifique a decisão.
-            - Não alucine informações, baseie-se apenas no contexto fornecido.
+            - Seja técnico, direto e profissional.
+            - Não invente informações.
+            - Baseie-se apenas nos dados fornecidos.
+            - Responda apenas em texto puro.
+            - Não utilize símbolos como **, #, -, ou listas formatadas.
+            - Escreva em parágrafos simples.
+            - Não seja genérico.
             """;
     }
+
+    private static string NormalizeHistoric(string text)
+        => text.Trim().Replace("\n", " ").Replace("\r", " ").ToLowerInvariant();
 }

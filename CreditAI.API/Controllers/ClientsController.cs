@@ -1,6 +1,7 @@
 ﻿using Microsoft.AspNetCore.Mvc;
 using CreditAI.API.Services;
 using CreditAI.API.DTO;
+using System.ComponentModel.DataAnnotations;
 
 namespace CreditAI.API.Controllers;
 
@@ -9,26 +10,31 @@ namespace CreditAI.API.Controllers;
 public class ClientsController(CreditAnalysisService creditAnalysisService): ControllerBase
 {
     /// <summary>
-    /// Lista todos os clientes cadastrados na base.
+    /// Retorna lista paginada de clientes
     /// </summary>
-    /// <remarks>
-    /// Retorna uma lista paginada de clientes para fins de conferência e visualização.
-    /// Use os parâmetros <paramref name="page"/> e <paramref name="pageSize"/> para controlar a paginação.
-    /// </remarks>
-    /// <param name="page">Número da página a ser retornada. Valor padrão é 1.</param>
-    /// <param name="pageSize">Quantidade de clientes por página. Valor padrão é 20.</param>
-    /// <param name="ct">Token de cancelamento para abortar a requisição.</param>
-    /// <response code="200">Lista paginada de clientes.</response>
+    /// <param name="query">
+    /// Parâmetros de paginação (página e quantidade por página).
+    /// </param>
+    /// <param name="ct">
+    /// Token de cancelamento da requisição.
+    /// </param>
+    /// <response code="200">
+    /// Lista paginada de clientes.
+    /// </response>
     [HttpGet]
     [ProducesResponseType(typeof(PagedResponse<ClientResponse>), StatusCodes.Status200OK)]
-    public async Task<IActionResult> GetClients(
-        [FromQuery] int page = 1,
-        [FromQuery] int pageSize = 20,
-        CancellationToken ct = default)
+    public async Task<ActionResult<PagedResponse<ClientResponse>>> GetClients(
+    [FromQuery] PaginationQuery query,
+    CancellationToken ct)
     {
-        var response = await creditAnalysisService
-                                .GetAllClients(page, pageSize, ct);
-        return Ok(response);
+        query = query with
+        {
+            Page = Math.Max(query.Page, 1),
+            PageSize = Math.Clamp(query.PageSize, 1, 100)
+        };
+
+        return await creditAnalysisService
+                        .GetAllClients(query.Page, query.PageSize, ct);
     }
 
     /// <summary>
@@ -46,7 +52,8 @@ public class ClientsController(CreditAnalysisService creditAnalysisService): Con
         CancellationToken ct)
     {
         var client = await creditAnalysisService.GetById(id, ct);
-        return Ok(client);
+
+        return client is null ? NotFound(): Ok(client);
     }
 
     /// <summary>
@@ -64,17 +71,18 @@ public class ClientsController(CreditAnalysisService creditAnalysisService): Con
     [HttpPost]
     [ProducesResponseType(typeof(ClientResponse), StatusCodes.Status201Created)]
     [ProducesResponseType(StatusCodes.Status400BadRequest)]
-    public async Task<IActionResult> Ingest(
+    [ProducesResponseType(StatusCodes.Status409Conflict)]
+    public async Task<IActionResult> Create(
         [FromBody] ClientRequest request,
         CancellationToken ct)
     {
         var response = await creditAnalysisService.Ingest(request, ct);
 
-        return CreatedAtAction(nameof(GetById), new { id = response.PublicId }, response);
+        return CreatedAtAction(nameof(GetById), new { id = response.Id }, response);
     }
 
     /// <summary>
-    /// Realiza a análise cognitiva de risco de crédito de um cliente.
+    /// Realiza a análise de risco de crédito de um cliente.
     /// </summary>
     /// <remarks>
     /// Envia o histórico do cliente para o modelo de linguagem e retorna insights técnicos sobre o risco financeiro.
@@ -92,17 +100,11 @@ public class ClientsController(CreditAnalysisService creditAnalysisService): Con
     [ProducesResponseType(StatusCodes.Status404NotFound)]
     public async Task<IActionResult> Analyze(
         Guid id,
-        [FromQuery] string question,
+        [FromQuery][Required] string question,
         CancellationToken ct)
     {
-        if (string.IsNullOrWhiteSpace(question))
-            return BadRequest("A pergunta não pode ser vazia.");
 
         var result = await creditAnalysisService.AnalyzeRisk(id, question, ct);
-
-        if (result is null)
-            return NotFound();
-
         return Ok(result);
     }
 
@@ -130,9 +132,6 @@ public class ClientsController(CreditAnalysisService creditAnalysisService): Con
 
         var response = await creditAnalysisService
                                 .GetSimilarCustomers(id, limit, ct);
-
-        if (response.Count == 0)
-            return NotFound();
 
         return Ok(response);
     }

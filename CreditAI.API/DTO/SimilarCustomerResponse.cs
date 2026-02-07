@@ -6,4 +6,5 @@ public record SimilarCustomerResponse
     public string Name { get; init; } = string.Empty;
     public int FinancialScore { get; init; }
     public float Similarity { get; init; }
+    public string Reason { get; init; } = default!;
 }
