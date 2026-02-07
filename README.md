@@ -58,7 +58,7 @@ Lista todos os perfis cadastrados. Útil para verificar o estado inicial da base
 
 
 
-### 2. `POST /api/Clients/ingest`
+### 2. `POST /api/Clients`
 
 Realiza o processamento de novos perfis. O histórico textual é enviado ao modelo mistral-embed para geração de um vetor de 1024 dimensões. O perfil, juntamente com seu Embedding, é persistido no SQL Server.
 
