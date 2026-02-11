@@ -55,6 +55,49 @@ public class CreditAnalysisService(
         };
     }
 
+    public async Task<ClientResponse> IngestSmart(SmartClientRequest request, CancellationToken ct)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+
+        // Transforma o JSON bruto em um texto narrativo
+        var systemPrompt = BuildCreatePrompt();
+
+        var rawDataJson = System.Text.Json.JsonSerializer.Serialize(request.RawData);
+        var fullPrompt = $"{systemPrompt}\n\nDados do Cliente:\n{rawDataJson}";
+
+        var aiResult = await kernel.InvokePromptAsync(fullPrompt, cancellationToken: ct);
+        var generatedHistoric = aiResult.ToString().Trim();
+
+        // Embedding
+        var normalizedHistoric = NormalizeHistoric(generatedHistoric);
+        var embeddings = await embeddingGenerator.GenerateAsync(
+                            values: [normalizedHistoric],
+                            cancellationToken: ct);
+
+        var vectorBytes = VectorHelper.ToByteArray(embeddings[0].Vector.ToArray());
+
+        var customer = new Customer
+        {
+            Name = request.Name.Trim(),
+            FinancialScore = request.FinancialScore,
+            HistoricText = generatedHistoric,
+            BehaviorEmbedding = vectorBytes,
+            CreatedAt = DateTime.UtcNow,
+        };
+
+        context.Customers.Add(customer);
+        await context.SaveChangesAsync(ct);
+
+        return new ClientResponse
+        {
+            Id = customer.PublicId,
+            Name = customer.Name,
+            FinancialScore = customer.FinancialScore,
+            HistoricText = customer.HistoricText,
+            CreatedAt = customer.CreatedAt
+        };
+    }
+
     /// <summary>
     /// Realiza a análise de risco do cliente com base no histórico e na pontuação financeira, 
     /// utilizando o modelo de linguagem para fornecer insights técnicos sobre o perfil de risco do cliente.
@@ -73,7 +116,7 @@ public class CreditAnalysisService(
         if (customer is null) 
             throw new KeyNotFoundException($"Cliente com ID {publicId} não encontrado.");
 
-        var prompt = BuildPrompt(customer, question);
+        var prompt = BuildAnalyzePrompt(customer, question);
 
         var result = await kernel.InvokePromptAsync(prompt, cancellationToken: ct);
 
@@ -86,16 +129,15 @@ public class CreditAnalysisService(
     }
 
     /// <summary>
-    /// Encontra clientes com comportamento semelhante utilizando busca vetorial.
-    /// O histórico textual é convertido em embeddings (vetores numéricos),
-    /// permitindo comparar semanticamente os perfis.
+    /// Identifica clientes com perfis comportamentais análogos através de busca vetorial híbrida.
+    /// Prioriza o "DNA financeiro" (95% do peso) sobre o score numérico tradicional (5%),
+    /// permitindo descobrir similaridades semânticas que sistemas de crédito puramente numéricos ignoram.
     /// </summary>
     public async Task<List<SimilarCustomerResponse>> GetSimilarCustomers(
         Guid publicId,
         int limit,
         CancellationToken ct)
     {
-        // Cliente base da comparação
         var target = await context.Customers
             .AsNoTracking()
             .FirstOrDefaultAsync(c => c.PublicId == publicId, ct);
@@ -104,11 +146,10 @@ public class CreditAnalysisService(
             throw new KeyNotFoundException($"Cliente com ID {publicId} não encontrado.");
 
         if (target.BehaviorEmbedding is null)
-            throw new InvalidOperationException($"Cliente com ID {publicId} não possui um embedding.");
+            throw new InvalidOperationException($"O cliente {target.Name} ainda não possui vetorização.");
 
         var targetVector = VectorHelper.ToFloatArray(target.BehaviorEmbedding);
 
-        // Apenas candidatos com embedding
         var candidates = await context.Customers
             .Where(c => c.PublicId != publicId && c.BehaviorEmbedding != null)
             .AsNoTracking()
@@ -121,43 +162,23 @@ public class CreditAnalysisService(
             })
             .ToListAsync(ct);
 
-        // Calcula a similaridade entre o cliente alvo e os demais utilizando cosine similarity.
-        // Cada histórico foi previamente transformado em um vetor numérico (embedding),
-        // permitindo comparar semanticamente os perfis em vez de apenas dados estruturados.
         var results = candidates
             .Select(c =>
             {
                 var embeddingVector = VectorHelper.ToFloatArray(c.BehaviorEmbedding!);
 
-                var vectorSimilarity = TensorPrimitives.CosineSimilarity(
-                    embeddingVector,
-                    targetVector);
+                // Cálculo da Similaridade de Cosseno
+                var vectorSimilarity = TensorPrimitives.CosineSimilarity(embeddingVector, targetVector);
 
-                // remove baixa relevância semântica
-                if (vectorSimilarity < 0.75f)
-                    return null;
+                // Corte de relevância para evitar ruído
+                if (vectorSimilarity < 0.75f) return null;
 
-                // normaliza diferença de score para escala 0..1
+                // Normalização do Score Financeiro (Escala 0..1)
                 var scoreDistance = Math.Abs(c.FinancialScore - target.FinancialScore);
                 var scoreSimilarity = 1f - (scoreDistance / 1000f);
 
-                // ranking híbrido (semântica + regra de negócio)
-                var finalScore = (vectorSimilarity * 0.75f) +
-                                 (scoreSimilarity * 0.25f);
-
-                string explanation;
-
-                if (vectorSimilarity > 0.90f)
-                    explanation = "Perfis comportamentais quase idênticos.";
-                else if (vectorSimilarity > 0.80f)
-                    explanation = "Comportamento financeiro muito semelhante.";
-                else
-                    explanation = "Similaridade moderada baseada no histórico.";
-
-                if (scoreSimilarity > 0.90f)
-                    explanation += " Scores financeiros praticamente iguais.";
-                else if (scoreSimilarity > 0.80f)
-                    explanation += " Scores financeiros próximos.";
+                // Ajuste 95% Vetor e 5% Score para que o perfil domine a ordenação
+                var finalScore = (vectorSimilarity * 0.95f) + (scoreSimilarity * 0.05f);
 
                 return new
                 {
@@ -165,20 +186,19 @@ public class CreditAnalysisService(
                     c.Name,
                     c.FinancialScore,
                     FinalScore = finalScore,
-                    VectorSimilarity = vectorSimilarity,
-                    Explanation = explanation
+                    VectorSimilarity = vectorSimilarity
                 };
             })
             .Where(x => x is not null)
-            .OrderByDescending(x => x!.FinalScore)
+            .OrderByDescending(x => x!.VectorSimilarity)
             .Take(limit)
             .Select(x => new SimilarCustomerResponse
             {
                 Id = x!.PublicId,
                 Name = x.Name,
                 FinancialScore = x.FinancialScore,
-                Similarity = MathF.Round(x.VectorSimilarity, 4),
-                Reason = x.Explanation
+                // Exibe a porcentagem real de afinidade comportamental
+                Similarity = MathF.Round(x.VectorSimilarity * 100, 2),
             })
             .ToList();
 
@@ -248,7 +268,7 @@ public class CreditAnalysisService(
         return client;
     }
 
-    private static string BuildPrompt(Customer customer, string question)
+    private static string BuildAnalyzePrompt(Customer customer, string question)
     {
         return $"""
             System: Você é um especialista sênior em risco de crédito bancário.
@@ -284,6 +304,29 @@ public class CreditAnalysisService(
             - Escreva em parágrafos simples.
             - Não seja genérico.
             """;
+    }
+
+    private static string BuildCreatePrompt()
+    {
+        return """
+        Você é um Analista de Risco de Crédito Sênior especializado em Behavior Score.
+        Sua tarefa é converter dados brutos (JSON) em um "Perfil de DNA Financeiro" conciso.
+
+        ### REGRAS DE ANÁLISE:
+        1. IDENTIFIQUE o padrão: O cliente é Estável, Oscilante ou Insolvente?
+        2. ANALISE os gatilhos: 
+           - MCC_7995 ou CHQ_DEVOLVIDO = Risco Crítico. Use palavras como "Insolvência", "Descontrole" e "Inidoneidade".
+           - Faturamento variável ou MEI = Risco Moderado. Use palavras como "Empreendedor", "Fluxo Inconstante" e "Sazonalidade".
+           - Renda Fixa ou Aposentadoria = Risco Baixo. Use palavras como "Previsibilidade Máxima", "Segurança" e "Conservador".
+
+        ### RESTRIÇÕES:
+        - Não use frases genéricas como "Perfil interessante".
+        - Seja direto: use no máximo 2 frases (aproximadamente 30 palavras).
+        - Foque na distância semântica: perfis estáveis devem soar opostos a perfis de risco.
+
+        ### SAÍDA ESPERADA:
+        Um resumo narrativo que descreva a essência do comportamento financeiro para fins de busca vetorial.
+        """;
     }
 
     private static string NormalizeHistoric(string text)

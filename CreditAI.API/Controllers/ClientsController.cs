@@ -56,30 +56,58 @@ public class ClientsController(CreditAnalysisService creditAnalysisService): Con
         return client is null ? NotFound(): Ok(client);
     }
 
+    ///// <summary>
+    ///// Cadastra um novo cliente e gera seu perfil vetorial.
+    ///// </summary>
+    ///// <remarks>
+    ///// Recebe os dados do cliente, envia o histórico textual para geração de embeddings 
+    ///// e persiste as informações no banco de dados.
+    ///// Retorna o cliente recém-criado com seu GUID público.
+    ///// </remarks>
+    ///// <param name="request">Objeto contendo os dados do cliente.</param>
+    ///// <param name="ct">Token de cancelamento para abortar a requisição.</param>
+    ///// <response code="201">Cliente inserido e vetorizado com sucesso.</response>
+    ///// <response code="400">Erro de validação do request.</response>
+    //[HttpPost]
+    //[ProducesResponseType(typeof(ClientResponse), StatusCodes.Status201Created)]
+    //[ProducesResponseType(StatusCodes.Status400BadRequest)]
+    //[ProducesResponseType(StatusCodes.Status409Conflict)]
+    //public async Task<IActionResult> Create(
+    //    [FromBody] ClientRequest request,
+    //    CancellationToken ct)
+    //{
+    //    var response = await creditAnalysisService.Ingest(request, ct);
+
+    //    return CreatedAtAction(nameof(GetById), new { id = response.Id }, response);
+    //}
+
     /// <summary>
-    /// Cadastra um novo cliente e gera seu perfil vetorial.
+    /// Cadastra um novo cliente utilizando IA para processar dados brutos.
     /// </summary>
     /// <remarks>
-    /// Recebe os dados do cliente, envia o histórico textual para geração de embeddings 
-    /// e persiste as informações no banco de dados.
-    /// Retorna o cliente recém-criado com seu GUID público.
+    /// - Recebe um JSON "cru" (logs, transações, perfil de Open Finance).
+    /// - Utiliza um LLM (Semantic Kernel) para interpretar o comportamento e gerar um histórico narrativo.
+    /// - Vetoriza esse histórico automaticamente para permitir buscas por similaridade.
+    /// 
+    /// Útil para automatizar a criação de perfis sem intervenção humana manual.
     /// </remarks>
-    /// <param name="request">Objeto contendo os dados do cliente.</param>
-    /// <param name="ct">Token de cancelamento para abortar a requisição.</param>
-    /// <response code="201">Cliente inserido e vetorizado com sucesso.</response>
-    /// <response code="400">Erro de validação do request.</response>
-    [HttpPost]
+    /// <param name="request">Objeto contendo o nome, score e o JSON dinâmico (RawData) do cliente.</param>
+    /// <param name="ct">Token de cancelamento da requisição.</param>
+    /// <response code="201">Cliente processado pela IA, vetorizado e persistido com sucesso.</response>
+    /// <response code="400">Dados brutos inválidos ou erro no processamento do modelo de linguagem.</response>
+    [HttpPost("smart")] // Se quiser forçar a ordem, use: [HttpPost("smart", Order = 3)]
     [ProducesResponseType(typeof(ClientResponse), StatusCodes.Status201Created)]
     [ProducesResponseType(StatusCodes.Status400BadRequest)]
-    [ProducesResponseType(StatusCodes.Status409Conflict)]
-    public async Task<IActionResult> Create(
-        [FromBody] ClientRequest request,
-        CancellationToken ct)
+    public async Task<IActionResult> CreateSmart(
+    [FromBody] SmartClientRequest request,
+    CancellationToken ct)
     {
-        var response = await creditAnalysisService.Ingest(request, ct);
+        // Este endpoint demonstra a IA transformando dados brutos em conhecimento
+        var response = await creditAnalysisService.IngestSmart(request, ct);
 
         return CreatedAtAction(nameof(GetById), new { id = response.Id }, response);
     }
+
 
     /// <summary>
     /// Realiza a análise de risco de crédito de um cliente.

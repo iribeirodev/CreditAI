@@ -44,6 +44,7 @@ namespace CreditAI.API
             {
                 var xmlFile = $"{Assembly.GetExecutingAssembly().GetName().Name}.xml"; 
                 var xmlPath = Path.Combine(AppContext.BaseDirectory, xmlFile);
+                c.OrderActionsBy(apiDesc => $"{apiDesc.HttpMethod}_{apiDesc.RelativePath}");
                 c.IncludeXmlComments(xmlPath);
             });
 
